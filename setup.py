@@ -10,7 +10,8 @@ setup(
     license='MIT',
     packages=['mplcolortext'],
     install_requires=[
-        'git+https://git@github.com/alastairgarner/mpltransform.git',
+        'mpltransform @ git+https://git@github.com/alastairgarner/mpltransform#egg=mpltransform',
+        # 'some-pkg @ git+ssh://git@github.com/someorgname/pkg-repo-name@v1.1#egg=some-pkg'
     ],
     zip_safe=False
 )
