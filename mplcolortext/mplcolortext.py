@@ -1,10 +1,12 @@
 
 import re
 import numpy as np
+from collections import namedtuple
 
 from matplotlib.text import Text, _wrap_text
 from matplotlib.transforms import Affine2D, Bbox
 
+Chunk = namedtuple('Chunk', 'string x y format')
 class TextMultiColor(Text):
     
     def __init__(self, *args, highlight={}, flag='[:]', **kwargs):
@@ -28,9 +30,9 @@ class TextMultiColor(Text):
         lines = self.get_text().split("\n")  # Ensures lines is not empty.
         
         # AG >>>>>>>>>>>
-        sections = self._parse_multicolor_string(self.get_text(), self._flag, renderer)
-        lines = [section["string"] for section in sections]
-        self._highlight_order = [section["opts"] for section in sections]
+        chunks = self._parse_multicolor_string(self.get_text(), self._flag, renderer)
+        lines = [chunk.string for chunk in chunks]
+        self._highlight_order = [chunk.format for chunk in chunks]
         # <<<<<<<<<<<<<<
 
         ws = []
@@ -44,9 +46,9 @@ class TextMultiColor(Text):
             ismath="TeX" if self.get_usetex() else False)
         min_dy = (lp_h - lp_d) * self._linespacing
 
-        for i, section in enumerate(sections):        # |AG
+        for i, chunk in enumerate(chunks):        # |AG
 
-            clean_line, ismath = self._preprocess_math(section["string"])
+            clean_line, ismath = self._preprocess_math(chunk.string)
             if clean_line:
                 w, h, d = renderer.get_text_width_height_descent(
                     clean_line, self._fontproperties, ismath=ismath)
@@ -68,13 +70,13 @@ class TextMultiColor(Text):
             if i == 0:
                 # position at baseline
                 thisy = -(h - d)
-            elif not section["offsety"]:      # |AG
+            elif not chunk.y:      # |AG
                 thisy += d      # |
             else:
                 # put baseline a good distance from bottom of previous line
                 thisy -= max(min_dy, (h - d) * self._linespacing)
             
-            thisx = section["offsetx"]        # AG
+            thisx = chunk.x        # AG
             
             xs.append(thisx)  # == 0.
             ys.append(thisy)
@@ -327,7 +329,7 @@ class TextMultiColor(Text):
         parts = re.split(expr, string)
 
         expr = f"[\{opn}](.*?)[\{sep}](.*?)[\{clo}]"
-        phrases = []
+        chunks = []
         offsetx = 0.0
         for part in parts:
             offsety = False
@@ -353,17 +355,12 @@ class TextMultiColor(Text):
                     offsetx = 0.0
                     offsety = True 
                     
-                phrase = dict(
-                    string = row,
-                    offsety = offsety,
-                    offsetx = offsetx,
-                    opts = hl
-                )
-                phrases.append(phrase)
+                chunk = Chunk(row, offsetx, offsety, hl)
+                chunks.append(chunk)
                 
             offsetx += w
         
-        return phrases
+        return chunks
     
     
 def multicolor_text(x=None, y=None, string=None, flag='[:]', highlight={}, linespacing=1.2, parent=None, system=None, anchor='bl', **kwargs):
