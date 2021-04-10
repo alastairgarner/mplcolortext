@@ -1,165 +1,369 @@
 
 import re
+import numpy as np
 
-from matplotlib.axes import Axes
-from matplotlib.figure import  Figure
-from matplotlib.text import Text
-from matplotlib.offsetbox import AnchoredOffsetbox, TextArea, HPacker
+from matplotlib.text import Text, _wrap_text
+from matplotlib.transforms import Affine2D, Bbox
 
-from mpltransform import transform_factory
-
-class TextMultiColor(object):
-    """
-    docstring
-    """
+class TextMultiColor(Text):
     
-    def __init__(self, x=None, y=None, string=None, flag='[:]', highlight={}, linespacing=1.2, parent=None, system=None, anchor=None, **kwargs):
+    def __init__(self, *args, highlight={}, flag='[:]', **kwargs):
+        super().__init__(*args, **kwargs)
         
-        self.parent = parent
-        if isinstance(parent, Axes):
-            self.figure = parent.figure
-            self.transform = parent.transAxes
-        elif isinstance(parent, Figure):
-            self.figure = parent
-            self.transform = parent.transFigure
-        else:
-            raise Exception('Object passed must be a Figure or Axes instance')
+        self._flag = flag
+        self._highlight = highlight
+        self._highlight_order = []
         
-        self.string = string
-        assert isinstance(flag,str) & (len(flag) == 3)
-        self.flag = flag
-        
-        self.x = x
-        self.y = y
-        
-        self.linespacing = linespacing
-        self.base = kwargs
-        self.highlight = highlight
-        
-        self.transform = self._generate_transform(system, anchor)
+    def _get_layout(self, renderer):
+        """
+        Return the extent (bbox) of the text together with
+        multiple-alignment information. Note that it returns an extent
+        of a rotated text when necessary.
+        """
+        key = self.get_prop_tup(renderer=renderer)
+        if key in self._cached:
+            return self._cached[key]
 
-        self.renderer = self.figure.canvas.get_renderer()
-        self.boxes = None
-        self.children = None
+        thisx, thisy = 0.0, 0.0
+        lines = self.get_text().split("\n")  # Ensures lines is not empty.
         
-        self._generate_lines()
+        # AG >>>>>>>>>>>
+        sections = self._parse_multicolor_string(self.get_text(), self._flag, renderer)
+        lines = [section["string"] for section in sections]
+        self._highlight_order = [section["opts"] for section in sections]
+        # <<<<<<<<<<<<<<
 
-    def _generate_transform(self, system=None, anchor='bl'):
-        """docstring"""
-        
-        if system is not None:
-            self.transform = transform_factory(self.parent, system=system, anchor=anchor)
+        ws = []
+        hs = []
+        xs = []
+        ys = []
+
+        # Full vertical extent of font, including ascenders and descenders:
+        _, lp_h, lp_d = renderer.get_text_width_height_descent(
+            "lp", self._fontproperties,
+            ismath="TeX" if self.get_usetex() else False)
+        min_dy = (lp_h - lp_d) * self._linespacing
+
+        for i, section in enumerate(sections):        # |AG
+
+            clean_line, ismath = self._preprocess_math(section["string"])
+            if clean_line:
+                w, h, d = renderer.get_text_width_height_descent(
+                    clean_line, self._fontproperties, ismath=ismath)
+            else:
+                w = h = d = 0
+
+            # For multiline text, increase the line spacing when the text
+            # net-height (excluding baseline) is larger than that of a "l"
+            # (e.g., use of superscripts), which seems what TeX does.
+            h = max(h, lp_h)
+            d = max(d, lp_d)
+
+            ws.append(w)
+            hs.append(h)
+
+            # Metrics of the last line that are needed later:
+            baseline = (h - d) - thisy
+
+            if i == 0:
+                # position at baseline
+                thisy = -(h - d)
+            elif not section["offsety"]:      # |AG
+                thisy += d      # |
+            else:
+                # put baseline a good distance from bottom of previous line
+                thisy -= max(min_dy, (h - d) * self._linespacing)
             
-        return self.transform
+            thisx = section["offsetx"]        # AG
+            
+            xs.append(thisx)  # == 0.
+            ys.append(thisy)
+
+            thisy -= d
+
+        # Metrics of the last line that are needed later:
+        descent = d
+
+        # Bounding box definition:
+        width = max(ws)
+        xmin = 0
+        xmax = width
+        ymax = 0
+        ymin = ys[-1] - descent  # baseline of last line minus its descent
+        height = ymax - ymin
+
+        # get the rotation matrix
+        M = Affine2D().rotate_deg(self.get_rotation())
+
+        # now offset the individual text lines within the box
+        malign = self._get_multialignment()
+        if malign == 'left':
+            offset_layout = [(x, y) for x, y in zip(xs, ys)]
+        elif malign == 'center':
+            offset_layout = [(x + width / 2 - w / 2, y)
+                             for x, y, w in zip(xs, ys, ws)]
+        elif malign == 'right':
+            offset_layout = [(x + width - w, y)
+                             for x, y, w in zip(xs, ys, ws)]
+
+        # the corners of the unrotated bounding box
+        corners_horiz = np.array(
+            [(xmin, ymin), (xmin, ymax), (xmax, ymax), (xmax, ymin)])
+
+        # now rotate the bbox
+        corners_rotated = M.transform(corners_horiz)
+        # compute the bounds of the rotated box
+        xmin = corners_rotated[:, 0].min()
+        xmax = corners_rotated[:, 0].max()
+        ymin = corners_rotated[:, 1].min()
+        ymax = corners_rotated[:, 1].max()
+        width = xmax - xmin
+        height = ymax - ymin
+
+        # Now move the box to the target position offset the display
+        # bbox by alignment
+        halign = self._horizontalalignment
+        valign = self._verticalalignment
+
+        rotation_mode = self.get_rotation_mode()
+        if rotation_mode != "anchor":
+            # compute the text location in display coords and the offsets
+            # necessary to align the bbox with that location
+            if halign == 'center':
+                offsetx = (xmin + xmax) / 2
+            elif halign == 'right':
+                offsetx = xmax
+            else:
+                offsetx = xmin
+
+            if valign == 'center':
+                offsety = (ymin + ymax) / 2
+            elif valign == 'top':
+                offsety = ymax
+            elif valign == 'baseline':
+                offsety = ymin + descent
+            elif valign == 'center_baseline':
+                offsety = ymin + height - baseline / 2.0
+            else:
+                offsety = ymin
+        else:
+            xmin1, ymin1 = corners_horiz[0]
+            xmax1, ymax1 = corners_horiz[2]
+
+            if halign == 'center':
+                offsetx = (xmin1 + xmax1) / 2.0
+            elif halign == 'right':
+                offsetx = xmax1
+            else:
+                offsetx = xmin1
+
+            if valign == 'center':
+                offsety = (ymin1 + ymax1) / 2.0
+            elif valign == 'top':
+                offsety = ymax1
+            elif valign == 'baseline':
+                offsety = ymax1 - baseline
+            elif valign == 'center_baseline':
+                offsety = ymax1 - baseline / 2.0
+            else:
+                offsety = ymin1
+
+            offsetx, offsety = M.transform((offsetx, offsety))
+
+        xmin -= offsetx
+        ymin -= offsety
+
+        bbox = Bbox.from_bounds(xmin, ymin, width, height)
+
+        # now rotate the positions around the first (x, y) position
+        xys = M.transform(offset_layout) - (offsetx, offsety)
+
+        ret = bbox, list(zip(lines, zip(ws, hs), *xys.T)), descent
+        self._cached[key] = ret
+        return ret
     
-    def _get_default_fontproperties(self):
+    def draw(self, renderer):
+        # docstring inherited
+
+        if renderer is not None:
+            self._renderer = renderer
+        if not self.get_visible():
+            return
+        if self.get_text() == '':
+            return
+
+        renderer.open_group('text', self.get_gid())
+
+        with _wrap_text(self) as textobj:
+            bbox, info, descent = textobj._get_layout(renderer)
+            trans = textobj.get_transform()
+
+            # don't use textobj.get_position here, which refers to text
+            # position in Text:
+            posx = float(textobj.convert_xunits(textobj._x))
+            posy = float(textobj.convert_yunits(textobj._y))
+            posx, posy = trans.transform((posx, posy))
+            if not np.isfinite(posx) or not np.isfinite(posy):
+                # _log.warning("posx and posy should be finite values")
+                return
+            canvasw, canvash = renderer.get_canvas_width_height()
+
+            # Update the location and size of the bbox
+            # (`.patches.FancyBboxPatch`), and draw it.
+            if textobj._bbox_patch:
+                self.update_bbox_position_size(renderer)
+                self._bbox_patch.draw(renderer)
+
+            angle = textobj.get_rotation()
+            
+            i = 0
+            colors = ["black", "red", "blue", "green", "magenta"]
+            for line, wh, x, y in info:
+                
+                fontargs,gcargs = self._parse_text_args(**self._highlight_order[i])
+                fontproperties = textobj._get_updated_fontproperties(fontargs)
+                
+                gc = renderer.new_gc()
+                self._update_gc(gc, gcargs)
+                
+                if i == 0:
+                    textobj._set_gc_clip(gc)
+                i += 1
+
+                mtext = textobj if len(info) == 1 else None
+                x = x + posx
+                y = y + posy
+                if renderer.flipy():
+                    y = canvash - y
+                clean_line, ismath = textobj._preprocess_math(line)
+
+                if textobj.get_path_effects():
+                    from matplotlib.patheffects import PathEffectRenderer
+                    textrenderer = PathEffectRenderer(
+                        textobj.get_path_effects(), renderer)
+                else:
+                    textrenderer = renderer
+                
+                if textobj.get_usetex():
+                    textrenderer.draw_tex(gc, x, y, clean_line,
+                                          fontproperties, angle,
+                                          mtext=mtext)
+                else:
+                    textrenderer.draw_text(gc, x, y, clean_line,
+                                           fontproperties, angle,
+                                           ismath=ismath, mtext=mtext)
+                gc.restore()
+        
+        renderer.close_group('text')
+        self.stale = False
+        
+    def _parse_text_args(self, **kwargs):
         """docstring"""
         
-        default_text = Text(0,0,'', **self.base)
-        fp = default_text._fontproperties
-        del(default_text)
+        gc_args = ["color", "alpha", "url"]
+        fp_args = ["family", "style", "variant", "weight", "stretch", "size", "fname", "math_fontfamily"]
         
+        gcproperties = {}
+        fontproperties = {}
+        
+        if kwargs is not None:
+            for arg,val in kwargs.items():
+                if arg in gc_args:
+                    gcproperties.update({arg: val})
+
+                if arg in fp_args:
+                    fontproperties.update({arg: val})
+                                
+        return fontproperties, gcproperties
+    
+    def _update_gc(self, gc, properties=None):
+        
+        update = {        
+            "color": gc.set_foreground,
+            "alpha": gc.set_alpha,
+            "url": gc.set_url,
+        }
+
+        if properties is None:
+            return
+
+        for prop,value in properties.items():
+            if prop in update.keys():
+                update[prop](value)
+                
+    def _get_updated_fontproperties(self, properties=None):
+        """
+        dosctring
+        """
+        fp = self._fontproperties.copy()
+        
+        update = {        
+            "family": fp.set_family,
+            "style": fp.set_style,
+            "variant": fp.set_variant,
+            "weight": fp.set_weight,
+            "stretch": fp.set_stretch, 
+            "size": fp.set_size, 
+            "fname": fp.set_file, 
+            # "math_fontfamily": fp.set_math_fontfamily, ## TODO work out why this doesn't work
+        }
+        
+        if properties is None:
+            return fp
+
+        for prop,value in properties.items():
+            if prop in update.keys():
+                update[prop](value)
+                
         return fp
 
-    def _generate_lines(self):
+    def _parse_multicolor_string(self, string, flag, renderer):
         """
         docstring
         """
-        opn,sep,clo = self.flag
+        opn,sep,clo = flag
 
         expr = f"([\{opn}].*?[\{clo}])"
-        parts = re.split(expr, self.string)
+        parts = re.split(expr, string)
 
         expr = f"[\{opn}](.*?)[\{sep}](.*?)[\{clo}]"
-        lines = [[]]
-        n = 0
+        phrases = []
+        offsetx = 0.0
         for part in parts:
-            opts = self.base.copy()
+            offsety = False
+            p = re.match(expr,part)    
             
-            p = re.match(expr,part)
+            hl = {}
+            fontargs = {}
             if p:
                 part,fmt = p.groups()
                 fmt = int(fmt)
-                opts.update(self.highlight[fmt])
+                hl = self._highlight[fmt]
+                fontargs,_ = self._parse_text_args(**hl)
+            
+            fontproperties = self._get_updated_fontproperties(fontargs)
+            
+            phrase = part.split('\n')
+            for i,row in enumerate(phrase):
+                w,h,d = renderer.get_text_width_height_descent(
+                            row, prop=fontproperties, ismath=False
+                        )
                 
-            rows = part.split('\n')
-            for i,row in enumerate(rows):
                 if i != 0:
-                    lines.append([])
-                    n += 1
+                    offsetx = 0.0
+                    offsety = True 
+                    
+                phrase = dict(
+                    string = row,
+                    offsety = offsety,
+                    offsetx = offsetx,
+                    opts = hl
+                )
+                phrases.append(phrase)
                 
-                txt = TextArea(row, textprops=opts)
-                lines[n].append(txt)
-                
-        boxes  = []
-        for line in lines:
-            box = HPacker(children=line, align="baseline", pad=0, sep=0)
-            boxes.append(box)
-            
-        self.boxes = boxes
-        return boxes
-    
-    def _get_xy_px(self,x,y):
+            offsetx += w
         
-        # Get default font properties and text descent, in px
-        fp = self._get_default_fontproperties()
-        _,_,descent = self.renderer.get_text_width_height_descent("lp", fp, ismath=False)
-
-        # Determine the x,y position in display coordinates
-        xy_px = self.transform.transform([x, y]) - [0, descent]
-    
-        return xy_px
-    
-    def _get_y_increment(self):
-        
-        fp = self._get_default_fontproperties()
-
-        # determine line increment, in px
-        dpi = self.figure._dpi
-        fs = fp.get_size()
-        return (fs*self.linespacing) * (dpi/72)
-    
-    def _get_line_max_extent(self):
-
-        fp = self._get_default_fontproperties()
-        
-        width = height = descent = 0
-        for line in self.string.split('\n'):
-            w,h,d = self.renderer.get_text_width_height_descent(line, fp, ismath=False)
-            
-            width = max(width,w)
-            height = max(height,h)
-            descent = max(descent,d)
-        
-        return width,height,descent
-    
-    def draw(self, x=None, y=None):
-        """
-        Docstring
-        """
-        # https://stackoverflow.com/questions/33159134/matplotlib-y-axis-label-with-multiple-colors
-        
-        if x is None:
-            x = self.x
-        if y is None:
-            y = self.y
-        if (x is None) and (y is None):
-            raise Exception('No x,y arguments passed!')
-        
-        xy_px = self._get_xy_px(x,y)
-        y_incr_px = self._get_y_increment()
-        boxes = self.boxes
-
-        for box in boxes[::-1]:
-            x,y = self.transform.inverted().transform(xy_px)
-            anchored_xbox = AnchoredOffsetbox(loc=3, child=box, pad=0, frameon=False,
-                                        bbox_to_anchor=(x,y), bbox_transform=self.transform, borderpad=0)
-            self.parent.add_artist(anchored_xbox)
-            xy_px[1] += y_incr_px
-            
-        self.children = [textarea.get_children() for box in boxes for textarea in box.get_children()]
-        
-        return self.children
+        return phrases
     
     
 def multicolor_text(x=None, y=None, string=None, flag='[:]', highlight={}, linespacing=1.2, parent=None, system=None, anchor='bl', **kwargs):
