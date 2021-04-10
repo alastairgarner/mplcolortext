@@ -45,6 +45,9 @@ class TextMultiColor(Text):
             "lp", self._fontproperties,
             ismath="TeX" if self.get_usetex() else False)
         min_dy = (lp_h - lp_d) * self._linespacing
+        
+        pixels_per_pt = 1/72*self.figure._dpi
+        line_height = (pixels_per_pt * self.get_fontsize()) * self._linespacing
 
         for i, chunk in enumerate(chunks):        # |AG
 
@@ -74,7 +77,9 @@ class TextMultiColor(Text):
                 thisy += d      # |
             else:
                 # put baseline a good distance from bottom of previous line
-                thisy -= max(min_dy, (h - d) * self._linespacing)
+                # thisy -= max(min_dy, (h - d) * self._linespacing)
+                # AG edit - define change in y independent of font dimensions
+                thisy -= line_height - d # reduce by d, because d is minus'd 3 lines later anyway
             
             thisx = chunk.x        # AG
             
