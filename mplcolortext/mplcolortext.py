@@ -6,7 +6,8 @@ from collections import namedtuple
 from matplotlib.text import Text, _wrap_text
 from matplotlib.transforms import Affine2D, Bbox
 
-Chunk = namedtuple('Chunk', 'string x y format')
+Chunk = namedtuple('Chunk', 'string x y fontargs gcargs')
+
 class TextMultiColor(Text):
     
     def __init__(self, *args, highlight={}, flag='[:]', **kwargs):
@@ -14,7 +15,7 @@ class TextMultiColor(Text):
         
         self._flag = flag
         self._highlight = highlight
-        self._highlight_order = []
+        self._chunks = []
         
     def _get_layout(self, renderer):
         """
@@ -30,9 +31,9 @@ class TextMultiColor(Text):
         lines = self.get_text().split("\n")  # Ensures lines is not empty.
         
         # AG >>>>>>>>>>>
-        chunks = self._parse_multicolor_string(self.get_text(), self._flag, renderer)
+        chunks = self._string_to_chunks(self.get_text(), self._flag, renderer)
+        self._chunks = chunks                                                       # TODO maybe move this in __init__()
         lines = [chunk.string for chunk in chunks]
-        self._highlight_order = [chunk.format for chunk in chunks]
         # <<<<<<<<<<<<<<
 
         ws = []
@@ -227,11 +228,10 @@ class TextMultiColor(Text):
             colors = ["black", "red", "blue", "green", "magenta"]
             for line, wh, x, y in info:
                 
-                fontargs,gcargs = self._parse_text_args(**self._highlight_order[i])
-                fontproperties = textobj._get_updated_fontproperties(fontargs)
+                fontproperties = textobj._get_chunk_fontproperties(self._chunks[i].fontargs)
                 
                 gc = renderer.new_gc()
-                self._update_gc(gc, gcargs)
+                self._update_gcproperties(gc, self._chunks[i].gcargs)
                 
                 if i == 0:
                     textobj._set_gc_clip(gc)
@@ -283,7 +283,7 @@ class TextMultiColor(Text):
                                 
         return fontproperties, gcproperties
     
-    def _update_gc(self, gc, properties=None):
+    def _update_gcproperties(self, gc, properties=None):
         
         update = {        
             "color": gc.set_foreground,
@@ -298,7 +298,7 @@ class TextMultiColor(Text):
             if prop in update.keys():
                 update[prop](value)
                 
-    def _get_updated_fontproperties(self, properties=None):
+    def _get_chunk_fontproperties(self, properties=None):
         """
         dosctring
         """
@@ -324,7 +324,7 @@ class TextMultiColor(Text):
                 
         return fp
 
-    def _parse_multicolor_string(self, string, flag, renderer):
+    def _string_to_chunks(self, string, flag, renderer):
         """
         docstring
         """
@@ -345,10 +345,12 @@ class TextMultiColor(Text):
             if p:
                 part,fmt = p.groups()
                 fmt = int(fmt)
-                hl = self._highlight[fmt]
-                fontargs,_ = self._parse_text_args(**hl)
+                
+                if fmt in self._highlight.keys():
+                    hl = self._highlight[fmt]
             
-            fontproperties = self._get_updated_fontproperties(fontargs)
+            fontargs,gcargs = self._parse_text_args(**hl)
+            fontproperties = self._get_chunk_fontproperties(fontargs)
             
             phrase = part.split('\n')
             for i,row in enumerate(phrase):
@@ -360,12 +362,13 @@ class TextMultiColor(Text):
                     offsetx = 0.0
                     offsety = True 
                     
-                chunk = Chunk(row, offsetx, offsety, hl)
+                chunk = Chunk(row, offsetx, offsety, fontargs, gcargs)
                 chunks.append(chunk)
                 
             offsetx += w
         
         return chunks
+
     
     
 def multicolor_text(x=None, y=None, string=None, flag='[:]', highlight={}, linespacing=1.2, parent=None, system=None, anchor='bl', **kwargs):
