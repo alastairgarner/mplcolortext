@@ -50,12 +50,16 @@ class TextMultiColor(Text):
         pixels_per_pt = 1/72*self.figure._dpi
         line_height = (pixels_per_pt * self.get_fontsize()) * self._linespacing
 
+        cws = [0]
+        ln = 0
+        lns = []
         for i, chunk in enumerate(chunks):        # |AG
 
             clean_line, ismath = self._preprocess_math(chunk.string)
+            fontproperties = self._get_chunk_fontproperties(chunk.fontargs)
             if clean_line:
                 w, h, d = renderer.get_text_width_height_descent(
-                    clean_line, self._fontproperties, ismath=ismath)
+                    clean_line, fontproperties, ismath=ismath)
             else:
                 w = h = d = 0
 
@@ -64,9 +68,16 @@ class TextMultiColor(Text):
             # (e.g., use of superscripts), which seems what TeX does.
             h = max(h, lp_h)
             d = max(d, lp_d)
-
+            
             ws.append(w)
             hs.append(h)
+            
+            if (i != 0) & (chunk.x == 0):
+                ln += 1
+                cws.append(0)
+                
+            cws[ln] += w
+            lns.append(ln)
 
             # Metrics of the last line that are needed later:
             baseline = (h - d) - thisy
@@ -81,13 +92,15 @@ class TextMultiColor(Text):
                 # thisy -= max(min_dy, (h - d) * self._linespacing)
                 # AG edit - define change in y independent of font dimensions
                 thisy -= line_height - d # reduce by d, because d is minus'd 3 lines later anyway
-            
+
             thisx = chunk.x        # AG
             
             xs.append(thisx)  # == 0.
             ys.append(thisy)
 
             thisy -= d
+
+        ws = list(np.array(cws)[lns])
 
         # Metrics of the last line that are needed later:
         descent = d
@@ -109,10 +122,10 @@ class TextMultiColor(Text):
             offset_layout = [(x, y) for x, y in zip(xs, ys)]
         elif malign == 'center':
             offset_layout = [(x + width / 2 - w / 2, y)
-                             for x, y, w in zip(xs, ys, ws)]
+                            for x, y, w in zip(xs, ys, ws)]
         elif malign == 'right':
             offset_layout = [(x + width - w, y)
-                             for x, y, w in zip(xs, ys, ws)]
+                            for x, y, w in zip(xs, ys, ws)]
 
         # the corners of the unrotated bounding box
         corners_horiz = np.array(
