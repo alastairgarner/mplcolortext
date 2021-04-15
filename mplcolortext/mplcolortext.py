@@ -100,7 +100,7 @@ class TextMultiColor(Text):
 
             thisy -= d
 
-        ws = list(np.array(cws)[lns])
+        ws = [cws[ln] for ln in lns]
 
         # Metrics of the last line that are needed later:
         descent = d
