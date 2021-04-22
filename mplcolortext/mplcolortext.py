@@ -3,8 +3,13 @@ import re
 import numpy as np
 from collections import namedtuple
 
+from mpltransform import transform_factory
+
 from matplotlib.text import Text, _wrap_text
 from matplotlib.transforms import Affine2D, Bbox
+from matplotlib.figure import Figure
+from matplotlib.axes import Axes
+from matplotlib.pyplot import gca
 
 Chunk = namedtuple('Chunk', 'string x y fontargs gcargs')
 
@@ -382,17 +387,49 @@ class TextMultiColor(Text):
         
         return chunks
 
+def _multicolor_text_axes(*args, parent=None, system=None, anchor='bl', **kwargs):
     
+    if system is not None:
+        trans = transform_factory(object=parent, system=system, anchor=anchor)
+        kwargs.update({'transform': trans})
+        
+    t = TextMultiColor(*args, **kwargs)
     
-def multicolor_text(x=None, y=None, string=None, flag='[:]', highlight={}, linespacing=1.2, parent=None, system=None, anchor='bl', **kwargs):
+    t.set_clip_path(parent.patch)
+    parent._add_text(t)
+
+    return t
+
+def _multicolor_text_figure(*args, parent=None, system=None, anchor='bl', **kwargs):
+    
+    if system is not None:
+        trans = transform_factory(object=parent, system=system, anchor=anchor)
+    else:
+        trans = parent.transFigure
+
+    kwargs.update({'transform': trans})
+        
+    t = TextMultiColor(*args, **kwargs)
+    
+    t.set_figure(parent)
+
+    parent.texts.append(t)
+    t._remove_method = parent.texts.remove
+    parent.stale = True
+
+    return t
+    
+def multicolor_text(x, y, s, flag='[:]', highlight={}, linespacing=1.2, parent=None, system=None, anchor='bl', **kwargs):
     """
     Docstring
     """
-        
-    text = TextMultiColor(
-        x, y, string,
-        flag=flag, highlight=highlight, linespacing=linespacing, 
-        parent=parent, system=system, anchor=anchor, **kwargs
-    )
+
+    if not isinstance(parent,(Figure,Axes)):
+        parent = gca()
     
-    return text.draw()
+    if isinstance(parent,Figure):
+        return _multicolor_text_figure(x,y,s,flag=flag, highlight=highlight, linespacing=linespacing, parent=parent, system=system, anchor=anchor, **kwargs)
+    
+    else:
+        return _multicolor_text_axes(x,y,s,flag=flag, highlight=highlight, linespacing=linespacing, parent=parent, system=system, anchor=anchor, **kwargs)
+    
